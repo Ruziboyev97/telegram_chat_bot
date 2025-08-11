@@ -1,7 +1,9 @@
 // src/bot.rs
 
 use async_openai::Client;
+use async_openai::config::OpenAIConfig;
 use teloxide::prelude::*;
+use teloxide::dptree::deps;
 
 use crate::{config, openai_handler};
 
@@ -9,19 +11,17 @@ use crate::{config, openai_handler};
 async fn message_handler(
     bot: Bot,
     msg: Message,
-    client: Client,
+    client: Client<OpenAIConfig>, // Pass the client directly without 'In'
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let user_question = msg.text().unwrap_or_default();
 
     if user_question.is_empty() {
-        bot.send_message(msg.chat.id, "Пожалуйста, задайте мне вопрос.")
-            .await?;
+        bot.send_message(msg.chat.id, "Пожалуйста, задайте мне вопрос.").await?;
         return Ok(());
     }
 
     // Показываем статус "печатает..."
-    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
-        .await?;
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing).await?;
 
     // Задаем вопрос OpenAI
     match openai_handler::ask_question(&client, user_question).await {
@@ -33,8 +33,7 @@ async fn message_handler(
             bot.send_message(
                 msg.chat.id,
                 "Извините, произошла ошибка при обращении к AI.",
-            )
-            .await?;
+            ).await?;
         }
     }
 
@@ -55,13 +54,20 @@ pub async fn run() {
     };
 
     let bot = Bot::new(config.telegram_token);
-    let openai_client = Client::new().with_api_key(config.openai_api_key);
 
-    // `dispatching::repl` — это элегантный способ запустить бота
-    teloxide::repl(bot, move |bot: Bot, msg: Message| {
-        // Клонируем клиент OpenAI для каждого нового сообщения
-        let client = openai_client.clone();
-        async move { message_handler(bot, msg, client).await }
-    })
-    .await;
+    // Create the OpenAI client with the new configuration method
+    let openai_config = OpenAIConfig::new().with_api_key(config.openai_api_key);
+    let openai_client = Client::with_config(openai_config);
+
+    // Create a dispatcher with the handler and dependencies
+    let handler = dptree::entry()
+        .branch(Update::filter_message().endpoint(message_handler));
+
+    // Start the dispatcher with your client as a singleton dependency
+    Dispatcher::builder(bot, handler)
+        .dependencies(deps![openai_client]) // Use the new deps macro
+        .enable_ctrlc_handler()
+        .build()
+        .dispatch()
+        .await;
 }

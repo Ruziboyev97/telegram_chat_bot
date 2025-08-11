@@ -2,22 +2,31 @@
 
 use async_openai::{
     Client,
-    types::{CreateChatCompletionRequestArgs, Role},
+    types::{
+        ChatCompletionRequestMessage, // Add this import for the general message type
+        CreateChatCompletionRequestArgs,
+        Role,
+        ChatCompletionRequestUserMessageArgs,
+    },
+    config::OpenAIConfig,
 };
 
 /// Отправляет вопрос в OpenAI и возвращает ответ в виде строки.
 pub async fn ask_question(
-    client: &Client,
+    client: &Client<OpenAIConfig>,
     question: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let user_message = ChatCompletionRequestUserMessageArgs::default()
+        .role(Role::User)
+        .content(question)
+        .build()?;
+
+    // Explicitly convert the User message into the general ChatCompletionRequestMessage enum
+    let messages: Vec<ChatCompletionRequestMessage> = vec![user_message.into()];
+
     let request = CreateChatCompletionRequestArgs::default()
         .model("gpt-4o")
-        .messages([
-            async_openai::types::ChatCompletionRequestMessageArgs::default()
-                .role(Role::User)
-                .content(question)
-                .build()?,
-        ])
+        .messages(messages) // Pass the Vec<ChatCompletionRequestMessage> here
         .build()?;
 
     let response = client.chat().create(request).await?;
