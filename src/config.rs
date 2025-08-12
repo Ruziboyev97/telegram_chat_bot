@@ -1,43 +1,60 @@
 // src/config.rs
 
-use tokio_postgres::{Error as PostgresError, NoTls};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::Error as SqlxError;
+use std::collections::HashMap;
 
 /// Структура для хранения наших токенов
 #[derive(Debug, Clone)]
 pub struct Config {
     pub telegram_token: String,
-    pub openai_api_key: String,
+    pub gemini_api_key: String, // Переименовано для ясности
 }
 
 /// Асинхронная функция для загрузки конфигурации из PostgreSQL
-pub async fn load_config_from_db() -> Result<Config, PostgresError> {
-    // Прямая ссылка на базу данных
-    let db_url = "postgresql://neondb_owner:npg_yTKMQJ13eEnl@ep-old-brook-abe7xrx6-pooler.eu-west-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require";
+pub async fn load_config_from_db() -> Result<Config, SqlxError> {
+    let db_url = "postgresql://neondb_owner:npg_yTKMQJ13eEnl@ep-old-brook-abe7xrx6.eu-west-2.aws.neon.tech/neondb?sslmode=require";
     log::info!("Connecting to the database...");
 
-    // Подключаемся к базе данных
-    let (client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
-
-    // Запускаем соединение в фоновой задаче
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            log::error!("Database connection error: {}", e);
-        }
-    });
-
-    // Выполняем SQL-запрос
-    let row = client
-        .query_one(
-            "SELECT TELEGRAM_TOKEN, OPENAI_API_KEY FROM config LIMIT 1",
-            &[],
-        )
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(db_url)
         .await?;
 
-    // Создаем и возвращаем нашу структуру Config
+    let rows = sqlx::query!("SELECT key, value FROM config")
+        .fetch_all(&pool)
+        .await?;
+
+    let mut config_map: HashMap<String, String> = HashMap::new();
+    for row in rows {
+        config_map.insert(row.key, row.value);
+    }
+
+    let telegram_token = config_map
+        .get("TELEGRAM_TOKEN")
+        .ok_or_else(|| {
+            log::error!("TELEGRAM_TOKEN not found in database");
+            SqlxError::RowNotFound
+        })?
+        .clone();
+
+    let gemini_api_key = config_map
+        .get("GEMINI_API_KEY")
+        .ok_or_else(|| {
+            log::error!("GEMINI_API_KEY not found in database");
+            SqlxError::RowNotFound
+        })?
+        .clone();
+
+    log::info!("Configuration loaded: telegram_token and gemini_api_key found");
+
     let config = Config {
-        telegram_token: row.get("TELEGRAM_TOKEN"),
-        openai_api_key: row.get("OPENAI_API_KEY"),
+        telegram_token,
+        gemini_api_key,
     };
+
+    // Закрываем соединение с БД
+    pool.close().await;
 
     Ok(config)
 }

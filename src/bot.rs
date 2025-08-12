@@ -1,39 +1,61 @@
 // src/bot.rs
-
-use async_openai::Client;
-use async_openai::config::OpenAIConfig;
-use teloxide::prelude::*;
 use teloxide::dptree::deps;
+use teloxide::prelude::*;
 
-use crate::{config, openai_handler};
+use crate::{config, gemini_handler, gemini_handler::GeminiClient};
 
 /// Обработчик входящих сообщений.
 async fn message_handler(
     bot: Bot,
     msg: Message,
-    client: Client<OpenAIConfig>, // Pass the client directly without 'In'
+    client: GeminiClient,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let user_question = msg.text().unwrap_or_default();
+    // Проверяем, что сообщение является текстом.
+    let user_question = match msg.text() {
+        Some(text) => text,
+        None => {
+            return Ok(());
+        }
+    };
 
     if user_question.is_empty() {
-        bot.send_message(msg.chat.id, "Пожалуйста, задайте мне вопрос.").await?;
+        bot.send_message(msg.chat.id, "Пожалуйста, задайте мне вопрос.")
+            .await?;
         return Ok(());
     }
 
     // Показываем статус "печатает..."
-    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing).await?;
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
+        .await?;
 
-    // Задаем вопрос OpenAI
-    match openai_handler::ask_question(&client, user_question).await {
+    // Задаем вопрос Gemini
+    match gemini_handler::ask_question(&client, user_question).await {
         Ok(answer) => {
-            bot.send_message(msg.chat.id, answer).await?;
+            // Telegram имеет лимит на длину сообщения (4096 символов)
+            if answer.len() > 4000 {
+                let chunks: Vec<&str> = answer
+                    .as_bytes()
+                    .chunks(4000)
+                    .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
+                    .collect();
+
+                for chunk in chunks {
+                    if !chunk.is_empty() {
+                        bot.send_message(msg.chat.id, chunk).await?;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            } else {
+                bot.send_message(msg.chat.id, answer).await?;
+            }
         }
         Err(e) => {
-            log::error!("OpenAI API error: {:?}", e);
+            log::error!("Gemini API error: {:?}", e);
             bot.send_message(
                 msg.chat.id,
                 "Извините, произошла ошибка при обращении к AI.",
-            ).await?;
+            )
+            .await?;
         }
     }
 
@@ -55,17 +77,15 @@ pub async fn run() {
 
     let bot = Bot::new(config.telegram_token);
 
-    // Create the OpenAI client with the new configuration method
-    let openai_config = OpenAIConfig::new().with_api_key(config.openai_api_key);
-    let openai_client = Client::with_config(openai_config);
+    // Создаем клиента Gemini
+    let gemini_client = GeminiClient::new(config.gemini_api_key);
 
-    // Create a dispatcher with the handler and dependencies
-    let handler = dptree::entry()
-        .branch(Update::filter_message().endpoint(message_handler));
+    // Создаем диспетчер с обработчиком и зависимостями
+    let handler = dptree::entry().branch(Update::filter_message().endpoint(message_handler));
 
-    // Start the dispatcher with your client as a singleton dependency
+    // Запускаем диспетчер с нашим клиентом как зависимостью
     Dispatcher::builder(bot, handler)
-        .dependencies(deps![openai_client]) // Use the new deps macro
+        .dependencies(deps![gemini_client])
         .enable_ctrlc_handler()
         .build()
         .dispatch()

@@ -3,7 +3,7 @@
 // Объявляем наши модули, чтобы Rust знал о них
 mod bot;
 mod config;
-mod openai_handler;
+mod gemini_handler;
 
 #[tokio::main]
 async fn main() {
